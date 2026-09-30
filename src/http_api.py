@@ -12,6 +12,7 @@ from .domain import Actor, DomainError, PermissionDenied, ValidationError
 RECORD_RE = re.compile(r"^/api/records/(\d+)$")
 ACTION_RE = re.compile(r"^/api/records/(\d+)/actions/([a-z_]+)$")
 AUDIT_RE = re.compile(r"^/api/records/(\d+)/audit$")
+EVENT_RE = re.compile(r"^/api/events/([^/]+)$")
 
 
 def make_handler(service: Any, static_dir: Path):
@@ -57,7 +58,11 @@ def make_handler(service: Any, static_dir: Path):
 
         def _handle_error(self, exc: Exception) -> None:
             if isinstance(exc, DomainError):
-                self._send(exc.status, {"error": exc.code, "message": str(exc)})
+                payload = {"error": exc.code, "message": str(exc)}
+                # 台账容量/次数冲突时回传剩余次数与占用明细，供调用方重开核对。
+                if getattr(exc, "details", None):
+                    payload["details"] = exc.details
+                self._send(exc.status, payload)
             else:
                 self._send(500, {"error": "internal_error", "message": "服务内部错误"})
 
@@ -86,6 +91,14 @@ def make_handler(service: Any, static_dir: Path):
                     return
                 if parsed.path == "/api/stats":
                     self._send(200, service.stats(self._actor()))
+                    return
+                if parsed.path == "/api/events":
+                    query = parse_qs(parsed.query)
+                    self._send(200, {"items": service.list_events(self._actor(), limit=int(query.get("limit", ["100"])[0]))})
+                    return
+                match = EVENT_RE.match(parsed.path)
+                if match:
+                    self._send(200, service.get_event(self._actor(), match.group(1)))
                     return
                 self._send(404, {"error": "not_found", "message": "路径不存在"})
             except Exception as exc:
