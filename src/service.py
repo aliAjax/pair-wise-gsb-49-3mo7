@@ -52,6 +52,16 @@ class Service:
         record = self.repository.get(record_id)
         self.rules.require_transition(record, action)
         new_state, new_payload, summary = self.rules.apply_action(record, action, data or {})
+        details = {"summary": summary, "input": data or {}, "from": record["state"], "to": new_state}
+        # 事件台账与赔案占用的权威变更在仓储事务内完成，避免并发抢占与写入中断造成账实不符。
+        if action == "submit_claim":
+            return self.repository.submit_claim(record_id, int(expected_version), new_state, new_payload, actor.user_id, action, details)
+        if action == "calculate":
+            return self.repository.calculate_claim(record_id, int(expected_version), new_state, new_payload, actor.user_id, action, details)
+        if action == "settle":
+            return self.repository.settle_claim(record_id, int(expected_version), new_state, new_payload, actor.user_id, action, details)
+        if action in ("reject", "revoke"):
+            return self.repository.resolve_claim(record_id, int(expected_version), new_state, new_payload, actor.user_id, action, details)
         return self.repository.mutate(
             record_id=record_id,
             expected_version=int(expected_version),
@@ -59,7 +69,7 @@ class Service:
             payload=new_payload,
             actor_id=actor.user_id,
             action=action,
-            details={"summary": summary, "input": data or {}, "from": record["state"], "to": new_state},
+            details=details,
         )
 
     def timeline(self, actor: Actor, record_id: int) -> List[Dict[str, Any]]:
@@ -71,3 +81,20 @@ class Service:
         actor = self._actor(actor)
         self._ensure_known_role(actor)
         return self.repository.stats()
+
+    def list_events(self, actor: Actor) -> List[Dict[str, Any]]:
+        actor = self._actor(actor)
+        self._ensure_known_role(actor)
+        return self.repository.list_events()
+
+    def get_event(self, actor: Actor, event_id: str) -> Dict[str, Any]:
+        actor = self._actor(actor)
+        self._ensure_known_role(actor)
+        return self.repository.get_event(event_id)
+
+    def reconcile_events(self, actor: Actor = None) -> Dict[str, int]:
+        """重开/旧数据回填时按同一事件恢复占用核对。"""
+        if actor is not None:
+            actor = self._actor(actor)
+            self._ensure_known_role(actor)
+        return self.repository.reconcile_events()
